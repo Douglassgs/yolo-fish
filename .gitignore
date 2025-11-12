@@ -9,3 +9,7 @@ dataset
 
 # Virtual environments
 .venv
+.vscode
+.github
+.specify
+specs
