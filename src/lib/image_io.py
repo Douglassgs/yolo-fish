@@ -7,10 +7,7 @@ from PIL import Image
 
 
 def load_image_from_bytes(data: bytes) -> Tuple[Image.Image, int, int]:
-    """Load image from raw bytes using Pillow; returns PIL Image and (width, height).
-
-    Raises OSError if data is not a supported image.
-    """
+    """使用 Pillow 从字节流读取图片并返回图像对象及尺寸，遇到异常会抛出 OSError。"""
     bio = io.BytesIO(data)
     img = Image.open(bio)
     img.load()

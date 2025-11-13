@@ -13,6 +13,7 @@ from websockets.exceptions import ConnectionClosed  # type: ignore[import-untype
 import numpy as np 
 from PIL import Image
 from src.lib.overlay import draw_overlays
+from urllib.parse import urlencode
 
 
 async def iter_video_frames(video_path: Path, every: int) -> AsyncIterator[Tuple[int, "cv2.Mat"]]:
@@ -89,19 +90,38 @@ async def send_video_over_ws(
     every: int = 3,
     quality: int = 90,
     limit: int | None = None,
-    display: bool = False,  # 新增
-    window_name: str = "YOLO Stream",  # 新增
+    display: bool = False,
+    window_name: str = "YOLO Stream",
+    token: str | None = None,
+    client_id: str | None = None,
+    save_annotated: bool = False,
 ) -> None:
     """
     通过 WebSocket 发送视频帧，并保存后端返回的预测与标注图。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
     ndjson_path = out_dir / "predictions.ndjson"
+    det_ndjson_path = out_dir / "detections.ndjson"
+    ann_dir = out_dir / "pred_images"
+    if save_annotated:
+        ann_dir.mkdir(parents=True, exist_ok=True)
 
     user_requested_stop = False  # 新增
 
     try:
-        async with websockets.connect(uri, max_size=32 * 1024 * 1024) as ws:
+        # 认证与客户端标识：优先 token，其次 client_id
+        query: list[tuple[str, str]] = []
+        if token:
+            query.append(("token", token))
+        elif client_id:
+            query.append(("client_id", client_id))
+        if query:
+            q = urlencode(query)
+            final_uri = f"{uri}?{q}"
+        else:
+            final_uri = uri
+
+        async with websockets.connect(final_uri, max_size=32 * 1024 * 1024) as ws:
             # 接收会话信息
             first = await ws.recv()
             if isinstance(first, (bytes, bytearray)):
@@ -113,7 +133,8 @@ async def send_video_over_ws(
             if msg.get("type") != "session":
                 raise RuntimeError(f"首条消息不是会话信息: {msg}")
             session_id = msg.get("session_id")
-            print(f"[ws] 会话已建立: session_id={session_id}")
+            server_client_id = msg.get("client_id")
+            print(f"[ws] 会话已建立: session_id={session_id} client_id={server_client_id}")
 
             sent = 0
             # 最近一次预测（用于在两次预测之间持续显示）
@@ -130,7 +151,17 @@ async def send_video_over_ws(
                 while True:
                     msg_any = await ws.recv()
                     if isinstance(msg_any, (bytes, bytearray)):
-                        # 可能是上一条 prediction 的标注图，丢弃即可
+                        # 可能是上一条 prediction 的标注图
+                        if save_annotated and last_pred is not None:
+                            try:
+                                frame_index = int(last_pred.get("frame_index", 0))
+                                arr = np.frombuffer(msg_any, dtype=np.uint8)
+                                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                                if img is not None:
+                                    out_path = ann_dir / f"frame_{frame_index:06d}.jpg"
+                                    cv2.imwrite(str(out_path), img)
+                            except Exception as e:  # noqa: BLE001
+                                print(f"[ws] 保存标注图失败: {e}", file=sys.stderr)
                         continue
                     # 文本消息
                     try:
@@ -145,12 +176,26 @@ async def send_video_over_ws(
                         # 记录到 NDJSON
                         with ndjson_path.open("a", encoding="utf-8") as f:
                             f.write(json.dumps(data, ensure_ascii=False) + "\n")
-                        # 读取并丢弃紧随其后的标注 JPEG（二进制）
+                        # 读取紧随其后的标注 JPEG（二进制），若不保存则丢弃
                         try:
                             next_any = await ws.recv()
-                            # 不管是不是二进制，这里都丢弃，仅为清空缓冲
+                            if isinstance(next_any, (bytes, bytearray)):
+                                if save_annotated:
+                                    try:
+                                        frame_index = int(last_pred.get("frame_index", 0))
+                                        arr = np.frombuffer(next_any, dtype=np.uint8)
+                                        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                                        if img is not None:
+                                            out_path = ann_dir / f"frame_{frame_index:06d}.jpg"
+                                            cv2.imwrite(str(out_path), img)
+                                    except Exception as e:  # noqa: BLE001
+                                        print(f"[ws] 保存标注图失败: {e}", file=sys.stderr)
                         except Exception as e:  # noqa: BLE001
                             print(f"[ws] 读取标注图失败: {e}", file=sys.stderr)
+                    elif mtype == "fish_detection":
+                        # 逐条检测结果
+                        with det_ndjson_path.open("a", encoding="utf-8") as f:
+                            f.write(json.dumps(data, ensure_ascii=False) + "\n")
                     elif mtype == "error":
                         print(f"[ws] 后端错误: {data.get('message')}", file=sys.stderr)
                     elif mtype == "session":
@@ -168,7 +213,7 @@ async def send_video_over_ws(
                 if user_requested_stop:
                     break  # 新增
 
-                # 在抽帧节奏下发送帧
+                # 在抽帧节奏下发送帧（只发送，当 idx%every==0）
                 if idx % every == 0:
                     jpeg = encode_jpeg(frame, quality=quality)
                     await ws.send(jpeg)
@@ -243,7 +288,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=None, help="最多发送多少张（默认无限制）")
     p.add_argument("--host", default="localhost", help="后端主机（默认 localhost）")
     p.add_argument("--port", type=int, default=8000, help="后端端口（默认 8000）")
-    p.add_argument("--display", action="store_true", help="实时显示标注视频窗口")  # 新增
+    p.add_argument("--display", action="store_true", help="实时显示叠加预测的视频窗口")
+    p.add_argument("--token", default=None, help="认证 token（若配置了 WS_TOKENS，必须提供）")
+    p.add_argument("--client-id", dest="client_id", default=None, help="客户端标识（当未配置 WS_TOKENS 时可用）")
+    p.add_argument("--save-annotated", action="store_true", help="保存后端返回的标注帧 JPEG")
     return p.parse_args()
 
 
@@ -259,7 +307,10 @@ if __name__ == "__main__":
                 every=args.every,
                 quality=args.quality,
                 limit=args.limit,
-                display=args.display,  # 新增
+                display=args.display,
+                token=args.token,
+                client_id=args.client_id,
+                save_annotated=args.save_annotated,
             )
         )
     except KeyboardInterrupt:

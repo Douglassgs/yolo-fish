@@ -12,4 +12,9 @@ dataset
 .vscode
 .github
 .specify
+.pytest_cache
 specs
+test
+tmp
+fish_history.sqlite3
+test.py

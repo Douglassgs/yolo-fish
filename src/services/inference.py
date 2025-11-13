@@ -7,7 +7,13 @@ from typing import Any, List, Tuple
 
 from PIL import Image
 
-from ..lib.config import get_settings
+from ..lib.config import (
+    get_allowed_label_keywords,
+    get_allowed_labels,
+    get_disallowed_label_keywords,
+    get_disallowed_labels,
+    get_settings,
+)
 from ..lib.overlay import draw_overlays
 from ..lib.image_io import encode_image_to_jpeg_bytes
 
@@ -36,6 +42,11 @@ class InferenceService:
     def __init__(self) -> None:
         self._model = None
         self._model_version = "unknown"
+        self._allowed_labels = get_allowed_labels()
+        self._allowed_keywords = get_allowed_label_keywords()
+        self._disallowed_labels = get_disallowed_labels()
+        self._disallowed_keywords = get_disallowed_label_keywords()
+        self._min_conf = get_settings().min_confidence
 
     def warmup(self) -> None:
         if self._model is None:
@@ -44,7 +55,7 @@ class InferenceService:
     def _load_model(self) -> None:
         settings = get_settings()
         if settings.disable_model:
-            # mock mode: no real model loaded
+            # 模型禁用时进入模拟模式
             self._model = None
             self._names = None
             self._model_version = "mock"
@@ -70,13 +81,23 @@ class InferenceService:
                 labels.append(str(self._names[int(c)]))
             else:
                 labels.append(str(int(c)))
-        overlay_img = draw_overlays(img, det_boxes, labels, det_scores)
+        filtered: list[tuple[Tuple[float, float, float, float], str, float]] = []
+        for box, label, score in zip(det_boxes, labels, det_scores):
+            if score < self._min_conf:
+                continue
+            if self._allow_label(label):
+                filtered.append((box, label, score))
+        flt_boxes = [item[0] for item in filtered]
+        flt_labels = [item[1] for item in filtered]
+        flt_scores = [item[2] for item in filtered]
+        overlay_img = draw_overlays(img, flt_boxes, flt_labels, flt_scores)
         preds = []
-        for (x, y, w, h), label, score in zip(det_boxes, labels, det_scores):
+        for idx, ((x, y, w, h), label, score) in enumerate(filtered):
             preds.append(
                 {
                     "label": label,
                     "confidence": float(score),
+                    "detection_index": idx,
                     "bbox": {"x": float(x), "y": float(y), "w": float(w), "h": float(h)},
                 }
             )
@@ -103,7 +124,7 @@ class InferenceService:
                     y = float(cy - bh / 2.0)
                     boxes_xywh.append((x, y, float(bw), float(bh)))
         else:
-            # mock prediction: single centered box
+            # 模拟预测：生成一个居中的矩形
             boxes_xywh.append((w * 0.25, h * 0.25, w * 0.5, h * 0.5))
             cls.append(0)
             scores.append(0.5)
@@ -122,6 +143,33 @@ class InferenceService:
             annotated_jpeg=annotated_bytes,
             latency_ms=latency_ms,
         )
+
+    def _allow_label(self, label: str) -> bool:
+        """判断当前标签是否需要保留。
+
+        策略：
+        - 若设置了允许列表（精确或关键词），仅放行允许列表。
+        - 否则使用禁止列表排除明显的非鱼类标签（human/water/no fish/unknown 等）。
+        - 均为不区分大小写匹配。
+        """
+        lower = label.lower()
+
+        # 优先：允许列表
+        if self._allowed_labels or self._allowed_keywords:
+            if self._allowed_labels and lower in self._allowed_labels:
+                return True
+            for keyword in self._allowed_keywords:
+                if keyword and keyword in lower:
+                    return True
+            return False
+
+        # 默认：禁止列表（过滤明显非鱼类）
+        if self._disallowed_labels and lower in self._disallowed_labels:
+            return False
+        for keyword in self._disallowed_keywords:
+            if keyword and keyword in lower:
+                return False
+        return True
 
 
 _singleton: InferenceService | None = None

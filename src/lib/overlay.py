@@ -6,11 +6,11 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 def _measure_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
-    """Return (width, height) for text in a Pillow-version-safe way."""
+    """以兼容不同 Pillow 版本的方式返回文本宽高。"""
     if hasattr(draw, "textbbox"):
         left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
         return int(right - left), int(bottom - top)
-    # Fallback: estimate width via textlength and height via font metrics
+    # 回退策略：利用 textlength 与字体度量估算宽高
     width = int(draw.textlength(text, font=font)) if hasattr(draw, "textlength") else len(text) * 6
     try:
         ascent, descent = font.getmetrics()  # type: ignore[attr-defined]
@@ -27,13 +27,13 @@ def draw_overlays(
     scores: Iterable[float],
     color: tuple[int, int, int] = (0, 255, 0),
 ) -> Image.Image:
-    """Draw rectangles and labels onto a copy of the image and return it."""
+    """在图片副本上绘制矩形框与标签后返回结果。"""
     out = img.copy()
     draw = ImageDraw.Draw(out)
     try:
         font = ImageFont.load_default()
     except Exception:  # noqa: BLE001
-        # Ensure we always have a font; load_default rarely fails
+        # 兜底保证一定有字体，load_default 失败概率极低
         font = ImageFont.load_default()
 
     for (x, y, w, h), label, score in zip(boxes, labels, scores):

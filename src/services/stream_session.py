@@ -4,7 +4,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Set
+from typing import Set
 
 from ..lib.config import get_settings
 from ..repositories.sqlite import get_db
@@ -17,6 +17,9 @@ class StreamSession:
     frame_count: int = 0
     error_count: int = 0
     closed: bool = False
+    client_id: str = "anonymous"
+    detection_seq: int = 0
+    seen_hashes: Set[str] = field(default_factory=set)
 
     def inc_frame(self) -> None:
         self.frame_count += 1
@@ -27,21 +30,26 @@ class StreamSession:
     def should_sample(self, every_n: int = 10) -> bool:
         return self.frame_count % every_n == 0
 
+    def next_detection_seq(self) -> int:
+        """获取会话内递增的识别序号。"""
+        self.detection_seq += 1
+        return self.detection_seq
+
 
 class StreamSessionService:
     def __init__(self) -> None:
         self._active: Set[str] = set()
         self._max = get_settings().max_ws_sessions
 
-    def _start_session_db(self, session_id: str) -> None:
+    def _start_session_db(self, session_id: str, client_id: str) -> None:
         db = get_db()
         with db.connect() as con:
             con.execute(
                 """
-                INSERT OR REPLACE INTO sessions (session_id, status, start_time, end_time, frame_count, error_count)
-                VALUES (?, 'active', ?, NULL, 0, 0)
+                INSERT OR REPLACE INTO sessions (session_id, status, start_time, end_time, frame_count, error_count, client_id)
+                VALUES (?, 'active', ?, NULL, 0, 0, ?)
                 """,
-                (session_id, datetime.now(timezone.utc).isoformat()),
+                (session_id, datetime.now(timezone.utc).isoformat(), client_id),
             )
             con.commit()
 
@@ -58,12 +66,12 @@ class StreamSessionService:
             )
             con.commit()
 
-    def open(self) -> StreamSession:
+    def open(self, client_id: str) -> StreamSession:
         if len(self._active) >= self._max:
             raise RuntimeError("Max WebSocket sessions reached")
-        session = StreamSession()
+        session = StreamSession(client_id=client_id)
         self._active.add(session.session_id)
-        self._start_session_db(session.session_id)
+        self._start_session_db(session.session_id, client_id)
         return session
 
     def close(self, session: StreamSession, status: str = "closed") -> None:
