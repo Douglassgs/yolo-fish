@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+import hashlib
 from dataclasses import dataclass
 from typing import Any, List, Tuple
 
@@ -108,6 +109,16 @@ class InferenceService:
             self._load_model()
 
         w, h = img.width, img.height
+        # 基于图片内容计算稳定的 image_id，保证相同图片得到相同编号
+        # 使用 rgb 数据的 sha256 哈希，避免依赖请求参数，从而保持 API 接口不变
+        try:
+            # 确保使用一致的颜色模式
+            normalized_img = img.convert("RGB")
+            img_bytes = normalized_img.tobytes()
+            image_id = hashlib.sha256(img_bytes).hexdigest()
+        except Exception:
+            # 回退到随机 UUID，避免影响主流程
+            image_id = uuid.uuid4().hex
         t0 = time.time()
         boxes_xywh: list[tuple[float, float, float, float]] = []
         cls: list[int] = []
@@ -132,7 +143,6 @@ class InferenceService:
 
         preds, overlay_img = self._postprocess(img, boxes_xywh, cls, scores)
         annotated_bytes = encode_image_to_jpeg_bytes(overlay_img)
-        image_id = uuid.uuid4().hex
         latency_ms = int((t1 - t0) * 1000)
         return InferenceResult(
             image_id=image_id,

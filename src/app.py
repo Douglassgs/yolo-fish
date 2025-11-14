@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import logging
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 
 def create_app() -> FastAPI:
     """FastAPI 应用工厂，负责注册路由与生命周期钩子。"""
     app = FastAPI(title="Fish Detection API", version="0.1.0")
+
+    # 全局 CORS 配置：允许浏览器前端通过跨域访问 API
+    # 如果需要收紧安全策略，可以改为只允许特定前端域名。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # 可以按需替换为特定前端地址列表
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # 注册路由
     from .api.health import router as health_router
