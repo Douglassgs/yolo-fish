@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ======================
 # 路径配置
 # ======================
-IMAGE_FOLDER = "/home/douglass/yolo_fish/yolo_fish_img"
+IMAGE_FOLDER = "test"
 LABEL_FOLDER = "/home/douglass/yolo_fish/yolo_fish_label"
 OUTPUT_FOLDER = "./dataset/output"
 
@@ -23,7 +23,7 @@ COUNT_FOLDER = os.path.join(OUTPUT_FOLDER, "count_csv")
 DETECT_FOLDER = os.path.join(OUTPUT_FOLDER, "detection_csv")
 PRED_IMG_DIR = os.path.join(OUTPUT_FOLDER, "pred_images")
 METRIC_FOLDER = os.path.join(OUTPUT_FOLDER, "metrics_csv")
-MODEL_PATH = "old_src/best_final.pt"
+MODEL_PATH = "yolo_src/best_final.pt"
 
 CONF_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.45

@@ -125,12 +125,24 @@ def insert_record(
     ts = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(list(predictions), ensure_ascii=False)
     with db.connect() as con:
+        # 若记录已存在，则覆盖其内容，保证同一 record_id 的数据始终为最新
         con.execute(
             """
             INSERT INTO records (
               record_id, timestamp, source, image_ref, predictions_json,
               model_version, latency_ms, request_id, session_id, width, height
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(record_id) DO UPDATE SET
+              timestamp=excluded.timestamp,
+              source=excluded.source,
+              image_ref=excluded.image_ref,
+              predictions_json=excluded.predictions_json,
+              model_version=excluded.model_version,
+              latency_ms=excluded.latency_ms,
+              request_id=excluded.request_id,
+              session_id=excluded.session_id,
+              width=excluded.width,
+              height=excluded.height
             """,
             (
                 record_id,
@@ -352,16 +364,25 @@ def insert_image_detection(
     db = get_db()
     ts = datetime.now(timezone.utc).isoformat()
     with db.connect() as con:
+        # 保证同一 image_id + detection_index 下只有一条记录，新的结果覆盖旧的结果
         cur = con.execute(
             """
-            INSERT OR IGNORE INTO image_detections (
+            INSERT INTO image_detections (
               request_id, image_id, detection_index, label, confidence, width, height, timestamp
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(image_id, detection_index) DO UPDATE SET
+              request_id=excluded.request_id,
+              label=excluded.label,
+              confidence=excluded.confidence,
+              width=excluded.width,
+              height=excluded.height,
+              timestamp=excluded.timestamp
             """,
             (request_id, image_id, detection_index, label, confidence, width, height, ts),
         )
         con.commit()
-        return cur.rowcount == 1
+        # 无论是插入还是更新，都视为一次有效写入
+        return cur.rowcount >= 0
 
 
 def query_image_detections(image_id: str) -> list[dict[str, object]]:
