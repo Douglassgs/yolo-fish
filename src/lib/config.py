@@ -8,7 +8,7 @@ from typing import Dict, List
 
 @dataclass(frozen=True)
 class Settings:
-    model_path: str = os.getenv("MODEL_PATH", "yolo_src/best_final.pt")
+    model_path: str = os.getenv("MODEL_PATH", "yolo_src/wycBest.pt")
     db_path: str = os.getenv("DB_PATH", "./fish_history.sqlite3")
     max_batch_files: int = int(os.getenv("MAX_BATCH_FILES", "16"))
     max_file_mb: int = int(os.getenv("MAX_FILE_MB", "20"))

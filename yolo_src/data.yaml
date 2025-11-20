@@ -1,40 +1,40 @@
-path: /root/huangruoyu_project/marine-detect-main/data
+path: /home/douglass/yolo_fish
 train: images/train
 val: images/val
 test: images/test
 nc: 34
 names:
-- Albacore
-- Bigeye tuna
-- Black marlin
-- Blue marlin
-- Brama
-- Escolar
-- Great barracuda
-- Human
-- Indo Pacific sailfish
-- Lancetfish
-- Long snouted lancetfish
-- Mahi mahi
-- Marlin
-- Mola mola
-- No fish
-- Oilfish
-- Opah
-- Pelagic stingray
-- Pomfret
-- Rainbow runner
-- Roudie scolar
-- Shark
-- Shortbill spearfish
-- Sickle pomfret
-- Skipjack tuna
-- Snake mackerel
-- Striped marlin
-- Swordfish
-- Thresher shark
-- Tuna
-- Unknown
-- Wahoo
-- Water
-- Yellowfin tuna
+  - Albacore
+  - Bigeye tuna
+  - Black marlin
+  - Blue marlin
+  - Brama
+  - Escolar
+  - Great barracuda
+  - Human
+  - Indo Pacific sailfish
+  - Lancetfish
+  - Long snouted lancetfish
+  - Mahi mahi
+  - Marlin
+  - Mola mola
+  - No fish
+  - Oilfish
+  - Opah
+  - Pelagic stingray
+  - Pomfret
+  - Rainbow runner
+  - Roudie scolar
+  - Shark
+  - Shortbill spearfish
+  - Sickle pomfret
+  - Skipjack tuna
+  - Snake mackerel
+  - Striped marlin
+  - Swordfish
+  - Thresher shark
+  - Tuna
+  - Unknown
+  - Wahoo
+  - Water
+  - Yellowfin tuna

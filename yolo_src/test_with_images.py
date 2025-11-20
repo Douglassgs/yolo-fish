@@ -15,15 +15,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ======================
 # 路径配置
 # ======================
-IMAGE_FOLDER = "test"
-LABEL_FOLDER = "/home/douglass/yolo_fish/yolo_fish_label"
+IMAGE_FOLDER = "/home/douglass/yolo_fish/images/test"
+LABEL_FOLDER = "/home/douglass/yolo_fish/labels/test"
 OUTPUT_FOLDER = "./dataset/output"
 
 COUNT_FOLDER = os.path.join(OUTPUT_FOLDER, "count_csv")
 DETECT_FOLDER = os.path.join(OUTPUT_FOLDER, "detection_csv")
 PRED_IMG_DIR = os.path.join(OUTPUT_FOLDER, "pred_images")
 METRIC_FOLDER = os.path.join(OUTPUT_FOLDER, "metrics_csv")
-MODEL_PATH = "yolo_src/best_final.pt"
+MODEL_PATH = "yolo_src/wycBest.pt"
 
 CONF_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.45
@@ -56,7 +56,7 @@ except Exception:
     pass
 
 # 只验证数据集的 1/3（可调整为 0~1 之间的小数），设置随机种子保证可复现
-SAMPLE_FRACTION = 1/3  # 即验证 $1/3$ 数据
+SAMPLE_FRACTION = 1  # 即验证 $1/3$ 数据
 RANDOM_SEED = 42
 
 # ======================
@@ -127,6 +127,10 @@ def iou_xyxy(a, b):
 detection_log = []
 count_log = []
 per_image_log = []
+
+# 用于计算 AP50 的全局预测与 GT 记录
+ap_gt_records = []   # 每条: {image, cls, xyxy}
+ap_pred_records = [] # 每条: {image, cls, xyxy, conf}
 
 
 # ======================
@@ -238,7 +242,7 @@ for batch in tqdm(loader):
         orig_img = item["orig_img"]
         h, w = item["h"], item["w"]
 
-        # 读取 GT，记录到 CSV
+        # 读取 GT，记录到 CSV，并为 AP50 保存 GT 记录
         gt_boxes = load_gt_boxes(item["label_file"], w, h)
         for g in gt_boxes:
             x1, y1, x2, y2 = g["xyxy"]
@@ -248,6 +252,12 @@ for batch in tqdm(loader):
                 "species": class_names[g["cls"]],
                 "confidence": "-",
                 "bbox_x1": x1, "bbox_y1": y1, "bbox_x2": x2, "bbox_y2": y2
+            })
+
+            ap_gt_records.append({
+                "image": img_name,
+                "cls": g["cls"],
+                "xyxy": (x1, y1, x2, y2),
             })
 
         # 预测框，记录到 CSV + 画框
@@ -267,6 +277,13 @@ for batch in tqdm(loader):
                     "species": class_names[cid],
                     "confidence": round(conf, 4),
                     "bbox_x1": x1, "bbox_y1": y1, "bbox_x2": x2, "bbox_y2": y2
+                })
+
+                ap_pred_records.append({
+                    "image": img_name,
+                    "cls": cid,
+                    "xyxy": (x1, y1, x2, y2),
+                    "conf": conf,
                 })
 
                 cv2.rectangle(draw, (x1, y1), (x2, y2), (255, 0, 0), 2)
@@ -342,12 +359,143 @@ df["Accuracy_Cls_AllImgs"] = acc_cls_all
 df["Accuracy_Count_FishImgs"] = acc_cnt_fish
 df["Accuracy_Count_AllImgs"] = acc_cnt_all
 
+
+def compute_ap50_per_class(gt_records, pred_records, match_iou_thr=0.5):
+    """按类别计算 AP50，返回: {cls_id: ap50} 和 mAP50。"""
+    ap_per_class = {}
+    eps = 1e-16
+
+    # 根据类别分组 GT 和预测
+    from collections import defaultdict
+
+    gt_by_cls = defaultdict(list)
+    for g in gt_records:
+        gt_by_cls[g["cls"]].append(g)
+
+    pred_by_cls = defaultdict(list)
+    for p in pred_records:
+        pred_by_cls[p["cls"]].append(p)
+
+    for cls_id in sorted(gt_by_cls.keys()):
+        gts = gt_by_cls[cls_id]
+        preds = pred_by_cls.get(cls_id, [])
+
+        # 按图像组织 GT，便于标记是否匹配
+        gt_per_img = {}
+        for g in gts:
+            key = g["image"]
+            if key not in gt_per_img:
+                gt_per_img[key] = []
+            gt_per_img[key].append({"xyxy": g["xyxy"], "matched": False})
+
+        # 按置信度降序排序预测
+        preds_sorted = sorted(preds, key=lambda x: x["conf"], reverse=True)
+        tp = []
+        fp = []
+        for p in preds_sorted:
+            img_gts = gt_per_img.get(p["image"], [])
+            best_iou = 0.0
+            best_gt = None
+            for gt in img_gts:
+                if gt["matched"]:
+                    continue
+                iou = iou_xyxy(gt["xyxy"], p["xyxy"])
+                if iou >= match_iou_thr and iou > best_iou:
+                    best_iou = iou
+                    best_gt = gt
+            if best_gt is not None:
+                best_gt["matched"] = True
+                tp.append(1)
+                fp.append(0)
+            else:
+                tp.append(0)
+                fp.append(1)
+
+        if not gts:
+            ap_per_class[cls_id] = 0.0
+            continue
+
+        tp_cum = torch.tensor(tp).cumsum(0).float()
+        fp_cum = torch.tensor(fp).cumsum(0).float()
+        recalls = tp_cum / (len(gts) + eps)
+        precisions = tp_cum / (tp_cum + fp_cum + eps)
+
+        # 传统 11-point 或更细采样，这里用与 COCO 类似的数值积分
+        # 在 (0,1) 上插值取 101 个点
+        mrec = torch.cat((torch.tensor([0.0]), recalls, torch.tensor([1.0])))
+        mpre = torch.cat((torch.tensor([0.0]), precisions, torch.tensor([0.0])))
+
+        # 使 precision 单调不增
+        for i in range(mpre.size(0) - 1, 0, -1):
+            mpre[i-1] = torch.maximum(mpre[i-1], mpre[i])
+
+        # 在所有 recall 变化点处积分
+        indices = (mrec[1:] != mrec[:-1]).nonzero(as_tuple=False).squeeze()
+        ap = float(((mrec[indices + 1] - mrec[indices]) * mpre[indices + 1]).sum().item())
+        ap_per_class[cls_id] = ap
+
+    if ap_per_class:
+        map50 = float(sum(ap_per_class.values()) / len(ap_per_class))
+    else:
+        map50 = 0.0
+    return ap_per_class, map50
+
+
+# ===== 整体验证集级别的指标（类似 Ultralytics 汇总） =====
+total_TP = df["TP"].sum()
+total_FP = df["FP"].sum()
+total_FN = df["FN"].sum()
+
+global_precision = total_TP / (total_TP + total_FP) if (total_TP + total_FP) else 0
+global_recall = total_TP / (total_TP + total_FN) if (total_TP + total_FN) else 0
+global_f1 = 2 * global_precision * global_recall / (global_precision + global_recall) if (global_precision + global_recall) else 0
+
+# AP50 / mAP50 计算
+ap50_per_class, map50 = compute_ap50_per_class(ap_gt_records, ap_pred_records, match_iou_thr=MATCH_IOU_THR)
+
+# 全局指标保存
+global_metrics = pd.DataFrame([{
+    "num_images": len(df),
+    "total_TP": int(total_TP),
+    "total_FP": int(total_FP),
+    "total_FN": int(total_FN),
+    "precision": round(global_precision, 4),
+    "recall": round(global_recall, 4),
+    "f1": round(global_f1, 4),
+    "mAP50": round(map50, 4),
+    "Accuracy_Cls_FishImgs": round(acc_cls_fish, 4),
+    "Accuracy_Cls_AllImgs": round(acc_cls_all, 4),
+    "Accuracy_Count_FishImgs": round(acc_cnt_fish, 4),
+    "Accuracy_Count_AllImgs": round(acc_cnt_all, 4),
+}])
+global_metrics.to_csv(
+    os.path.join(METRIC_FOLDER, "global_metrics.csv"),
+    index=False,
+    encoding="utf-8-sig",
+)
+
+# 每类 AP50 也单独保存一份
+ap_rows = []
+for cid, ap in ap50_per_class.items():
+    ap_rows.append({
+        "cls_id": cid,
+        "cls_name": class_names[cid],
+        "AP50": round(ap, 4),
+    })
+pd.DataFrame(ap_rows).to_csv(
+    os.path.join(METRIC_FOLDER, "ap50_per_class.csv"),
+    index=False,
+    encoding="utf-8-sig",
+)
+
 pd.DataFrame(detection_log).to_csv(f"{DETECT_FOLDER}/detections.csv", index=False, encoding='utf-8-sig')
 pd.DataFrame(count_log).to_csv(f"{COUNT_FOLDER}/counts.csv", index=False, encoding='utf-8-sig')
 df.to_csv(f"{METRIC_FOLDER}/per_image_eval.csv", index=False, encoding='utf-8-sig')
 
 print("\n✅ 结果已生成！")
 print(f"📄 每图指标: {METRIC_FOLDER}/per_image_eval.csv")
+print(f"📄 全局指标: {METRIC_FOLDER}/global_metrics.csv")
+print(f"📄 每类 AP50: {METRIC_FOLDER}/ap50_per_class.csv")
 print(f"📄 检测框(GT+Pred): {DETECT_FOLDER}/detections.csv")
 print(f"📄 计数统计: {COUNT_FOLDER}/counts.csv")
 print(f"🖼️ 可视化图: {PRED_IMG_DIR}")
@@ -355,3 +503,7 @@ print(f"有鱼-种类准确率: {acc_cls_fish:.4f}")
 print(f"全图-种类准确率: {acc_cls_all:.4f}")
 print(f"有鱼-数量准确率: {acc_cnt_fish:.4f}")
 print(f"全图-数量准确率: {acc_cnt_all:.4f}")
+print(f"整体 Precision: {global_precision:.4f}")
+print(f"整体 Recall:    {global_recall:.4f}")
+print(f"整体 F1:        {global_f1:.4f}")
+print(f"mAP50:          {map50:.4f}")
